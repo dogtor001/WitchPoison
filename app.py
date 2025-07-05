@@ -101,11 +101,16 @@ def handle_eat_snack(data):
                 sid1, sid2 = game_state['players']
                 poison1 = game_state['poison_choices'].get(sid1, '?')
                 poison2 = game_state['poison_choices'].get(sid2, '?')
+                # Add log entry for eating poison
+                emit('log_entry', {
+                    'text': f'P{loser} 吃到毒药 #{snack_id}！游戏结束。'
+                }, broadcast=True)
                 emit('game_over', {
                     'winner': game_state['winner'],
                     'loser': loser,
                     'poison1': poison1,
-                    'poison2': poison2
+                    'poison2': poison2,
+                    'eaten_poison_snack_id': snack_id # Pass the ID of the eaten poison
                 }, broadcast=True)
                 emit('update_state', game_state, broadcast=True)
                 return

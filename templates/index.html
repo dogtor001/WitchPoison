@@ -89,6 +89,45 @@
             box-shadow: 0 0 8px rgba(255, 215, 0, 0.5);
             display: none;
         }
+
+        @keyframes poison-explode {
+            0% {
+                transform: scale(1);
+                opacity: 1;
+                background-color: #c0392b; /* Initial explosion color - dark red */
+                box-shadow: 0 0 5px #fff, 0 0 10px #fff, 0 0 15px #ff00ff, 0 0 20px #ff00ff;
+            }
+            25% {
+                transform: scale(1.6);
+                background-color: #e74c3c; /* Brighter Red flash */
+                box-shadow: 0 0 10px #fff, 0 0 20px #ff0000, 0 0 30px #ff0000, 0 0 40px #ff0000;
+            }
+            50% {
+                transform: scale(0.7);
+                opacity: 0.9;
+                background-color: #f39c12; /* Orange flash */
+            }
+            75% {
+                transform: scale(1.3);
+                background-color: #f1c40f; /* Yellow flash */
+                box-shadow: 0 0 15px #fff, 0 0 25px #ffff00, 0 0 35px #ffff00;
+            }
+            100% {
+                transform: scale(0.4);
+                opacity: 0;
+                background-color: #592d1d; /* Darken out to a brownish color */
+                box-shadow: none;
+            }
+        }
+
+        .snack.exploding {
+            animation-name: poison-explode;
+            animation-duration: 0.7s;
+            animation-fill-mode: forwards;
+            animation-timing-function: ease-in-out;
+            z-index: 100; /* Ensure it's on top during animation */
+            position: relative; /* Needed for z-index to take effect reliably on buttons */
+        }
     </style>
 </head>
 <body>
@@ -98,25 +137,25 @@
     <div class="status-bar" id="connection-info">连接信息加载中...</div>
     <div class="status-bar" id="status">等待玩家连接...</div>
 
-
+    <!-- ✨ 吃点心记录栏 (Moved to top) -->
+    <div id="log-box" style="
+        margin-bottom: 15px; /* Add some space below the log */
+        max-height: 120px; /* Max height for 5 entries (approx 24px per entry) */
+        overflow-y: auto;
+        font-size: 0.9rem;
+        color: #ccc;
+        border: 1px solid #444;
+        padding: 8px;
+        width: 100%;
+        max-width: 480px;
+        text-align: left;
+        background-color: rgba(0,0,0,0.15);
+        border-radius: 6px;
+    "></div>
 
     <div class="snack-table" id="snack-table"></div>
     <div class="system-message" id="system-message"></div>
     <button id="reset-btn">重新开始</button>
-
-    <!-- ✨ 吃点心记录栏 -->
-    <div id="log-box" style="
-        margin-top: 20px;
-        max-height: 180px;
-        overflow-y: auto;
-        font-size: 0.95rem;
-        color: #ccc;
-        border-top: 1px solid #555;
-        padding-top: 10px;
-        width: 100%;
-        max-width: 480px;
-        text-align: left;
-    "></div>
 
     <script>
         const socket = io();
@@ -128,6 +167,14 @@
         const logBox = document.getElementById('log-box');
         const resetBtn = document.getElementById('reset-btn');
 
+        let audioContext;
+        try {
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        } catch (e) {
+            console.warn('Web Audio API is not supported in this browser.');
+            audioContext = null; // Ensure it's null if not supported
+        }
+
         let myRole = 0;
         let isMyTurn = false;
         let snackCount = 20;
@@ -138,12 +185,48 @@
 
         const emoji = ['🍪', '🍰', '🍫', '🍩', '🧁', '🍬', '🍮', '🍭', '🥮', '🍡'];
 
+        function playSound(type) {
+            if (!audioContext) return;
+
+            // Create a new oscillator and gain node each time to ensure sounds can overlap if needed
+            // and to reset parameters for each sound type.
+            const oscillator = audioContext.createOscillator();
+            const gainNode = audioContext.createGain();
+            oscillator.connect(gainNode);
+            gainNode.connect(audioContext.destination);
+
+            // Set a general small volume to avoid clipping, can be adjusted per sound
+            gainNode.gain.setValueAtTime(0.08, audioContext.currentTime);
+
+            if (type === 'eat_food') {
+                oscillator.type = 'sine';
+                oscillator.frequency.setValueAtTime(523.25, audioContext.currentTime); // C5
+                oscillator.frequency.exponentialRampToValueAtTime(783.99, audioContext.currentTime + 0.1); // G5
+                gainNode.gain.exponentialRampToValueAtTime(0.00001, audioContext.currentTime + 0.2);
+                oscillator.start(audioContext.currentTime);
+                oscillator.stop(audioContext.currentTime + 0.2);
+            } else if (type === 'eat_poison') {
+                oscillator.type = 'sawtooth';
+                oscillator.frequency.setValueAtTime(329.63, audioContext.currentTime); // E4
+                oscillator.frequency.exponentialRampToValueAtTime(82.41, audioContext.currentTime + 0.4); // E2 (descend over 0.4s)
+                gainNode.gain.setValueAtTime(0.12, audioContext.currentTime); // Slightly louder for emphasis
+                gainNode.gain.exponentialRampToValueAtTime(0.00001, audioContext.currentTime + 0.4);
+                oscillator.start(audioContext.currentTime);
+                oscillator.stop(audioContext.currentTime + 0.4);
+            }
+            // Ensure the oscillator is disconnected after it stops to free up resources
+            oscillator.onended = () => {
+                oscillator.disconnect();
+                gainNode.disconnect();
+            };
+        }
+
         socket.on('force_reset_poison', () => {
             poisonChosen = false;
             myPoison = null;
             renderPoisonChoice();  // ✅ 强制重新选择毒药
         });
-        
+
         socket.on('assign_role', (data) => {
             myRole = data.role;
             statusBar.textContent = data.message;
@@ -157,12 +240,29 @@
         });
 
         socket.on('update_state', (state) => {
+            // Update core client-side state variables first
             eaten = state.eaten;
             snackCount = state.snack_count;
             isMyTurn = state.current_turn === myRole && !state.game_over;
-            gameStarted = Object.keys(state.poison_choices || {}).length === 2;
+
+            const numPoisonChoices = Object.keys(state.poison_choices || {}).length;
 
             connectionInfo.textContent = `玩家: ${state.players_count} / 2，观战者: ${state.spectators_count || 0}`;
+
+            // Check for a game reset state to clear the logBox and client-side gameStarted
+            // A reset occurs if: game is not over, no snacks are eaten, and no poisons are currently set.
+            if (!state.game_over && state.eaten.length === 0 && numPoisonChoices === 0) {
+                // Clear logBox only if it has content and the user is an active player.
+                // This prevents clearing for spectators joining an already reset game unnecessarily.
+                if (logBox.innerHTML !== '' && (myRole === 1 || myRole === 2)) {
+                    logBox.innerHTML = '';
+                }
+                gameStarted = false; // Explicitly set gameStarted to false on a clear reset
+            } else {
+                // If not a full reset, update gameStarted based on poison choices and game_over status
+                gameStarted = numPoisonChoices === 2 && !state.game_over;
+            }
+
             renderTable();
         });
 
@@ -175,26 +275,52 @@
         socket.on('snack_eaten', (data) => {
             const snackEmoji = getSnackEmoji(data.snack);
             statusBar.textContent = `P${data.by_player} 吃了 ${snackEmoji} #${data.snack}，轮到 P${data.next_turn}`;
+            playSound('eat_food');
         });
 
         socket.on('game_over', (data) => {
             if (data.winner === 0) {
                 statusBar.textContent = '平局！所有点心都吃完了';
+                // Optionally, play a different sound for a draw
+                // playSound('draw_game');
             } else {
                 statusBar.textContent =
                     `P${data.loser} 吃到了毒药，P${data.winner} 获胜！ ` +
                     `毒药揭晓：P1是 #${data.poison1}，P2是 #${data.poison2}`;
+                playSound('eat_poison');
+
+                if (data.eaten_poison_snack_id) {
+                    const explodingSnackButton = snackTable.querySelector(`.snack[data-snack-id='${data.eaten_poison_snack_id}']`);
+                    if (explodingSnackButton) {
+                        // Ensure it's marked as eaten visually before exploding,
+                        // though renderTable() called by update_state should handle this.
+                        // To be safe, and for immediate effect if update_state is slow:
+                        if (!explodingSnackButton.classList.contains('eaten')) {
+                             explodingSnackButton.classList.add('eaten');
+                        }
+                        explodingSnackButton.classList.add('exploding');
+                    }
+                }
             }
         });
 
         socket.on('log_entry', (data) => {
             const entry = document.createElement('div');
             entry.textContent = data.text;
-            logBox.appendChild(entry);
-            logBox.scrollTop = logBox.scrollHeight;
-            // 最多保留10条
-            if (logBox.children.length > 10) {
-                logBox.removeChild(logBox.children[0]);
+
+            // Insert new entry at the top
+            if (logBox.firstChild) {
+                logBox.insertBefore(entry, logBox.firstChild);
+            } else {
+                logBox.appendChild(entry); // If no children yet, just append
+            }
+
+            // logBox.scrollTop = 0; // Ensures the top (newest message) is visible if logBox overflows
+
+            // 最多保留5条 (newest at top, oldest at bottom)
+            // Use a while loop in case multiple entries arrive rapidly somehow, though unlikely here.
+            while (logBox.children.length > 5) {
+                logBox.removeChild(logBox.lastChild); // Remove the last child (oldest)
             }
         });
 
@@ -245,6 +371,7 @@
                 const btn = document.createElement('button');
                 btn.className = 'snack';
                 btn.textContent = getSnackEmoji(i) + i;
+                btn.dataset.snackId = i; // Add data attribute for easy selection
 
                 const isMine = (i === myPoison);
                 const alreadyEaten = eaten.includes(i);
