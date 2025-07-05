@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>女巫的毒药</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.4.1/socket.io.min.js"></script>
+    <style>
+        body {
+            font-family: 'Microsoft YaHei', sans-serif;
+            background: #1e0e26;
+            color: #f2e6ff;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        h1 {
+            font-size: 2rem;
+            margin-bottom: 10px;
+        }
+
+        .status-bar {
+            font-size: 1.1rem;
+            margin: 4px auto;
+            text-align: center;
+        }
+
+        .snack-table {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(60px, 1fr));
+            gap: 10px;
+            width: 100%;
+            max-width: 480px;
+            margin-top: 10px;
+        }
+
+        .snack {
+            background: #f1c40f;
+            color: #222;
+            border: none;
+            border-radius: 8px;
+            padding: 15px;
+            font-size: 1.1rem;
+            font-weight: bold;
+            cursor: pointer;
+            transition: 0.2s;
+            user-select: none;
+            touch-action: manipulation;
+        }
+
+        .snack.eaten {
+            background: #7f8c8d;
+            color: #ccc;
+            cursor: not-allowed;
+        }
+
+        .snack.poison {
+            background: #8e44ad;
+            color: #fff;
+        }
+
+        #reset-btn {
+            margin-top: 20px;
+            padding: 10px 20px;
+            font-size: 1rem;
+            background: #9b59b6;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+
+        #reset-btn:hover {
+            background: #8e44ad;
+        }
+
+        .system-message {
+            background: rgba(0, 0, 0, 0.6);
+            padding: 12px 20px;
+            border-radius: 15px;
+            color: #ffd700;
+            margin: 10px auto;
+            max-width: 90%;
+            text-align: center;
+            font-size: 1rem;
+            box-shadow: 0 0 8px rgba(255, 215, 0, 0.5);
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <h1>女巫的毒药</h1>
+
+    <div class="status-bar" id="role-info">角色加载中...</div>
+    <div class="status-bar" id="connection-info">连接信息加载中...</div>
+    <div class="status-bar" id="status">等待玩家连接...</div>
+
+
+
+    <div class="snack-table" id="snack-table"></div>
+    <div class="system-message" id="system-message"></div>
+    <button id="reset-btn">重新开始</button>
+
+    <!-- ✨ 吃点心记录栏 -->
+    <div id="log-box" style="
+        margin-top: 20px;
+        max-height: 180px;
+        overflow-y: auto;
+        font-size: 0.95rem;
+        color: #ccc;
+        border-top: 1px solid #555;
+        padding-top: 10px;
+        width: 100%;
+        max-width: 480px;
+        text-align: left;
+    "></div>
+
+    <script>
+        const socket = io();
+        const roleInfo = document.getElementById('role-info');
+        const connectionInfo = document.getElementById('connection-info');
+        const statusBar = document.getElementById('status');
+        const systemMessageBox = document.getElementById('system-message');
+        const snackTable = document.getElementById('snack-table');
+        const logBox = document.getElementById('log-box');
+        const resetBtn = document.getElementById('reset-btn');
+
+        let myRole = 0;
+        let isMyTurn = false;
+        let snackCount = 20;
+        let eaten = [];
+        let gameStarted = false;
+        let poisonChosen = false;
+        let myPoison = null;
+
+        const emoji = ['🍪', '🍰', '🍫', '🍩', '🧁', '🍬', '🍮', '🍭', '🥮', '🍡'];
+
+        socket.on('force_reset_poison', () => {
+            poisonChosen = false;
+            myPoison = null;
+            renderPoisonChoice();  // ✅ 强制重新选择毒药
+        });
+        
+        socket.on('assign_role', (data) => {
+            myRole = data.role;
+            statusBar.textContent = data.message;
+            roleInfo.textContent = (myRole === 1 || myRole === 2) ? `你是 P${myRole}` : `你是观战者`;
+        });
+
+        socket.on('prompt_set_poison', () => {
+            if ((myRole === 1 || myRole === 2) && !poisonChosen) {
+                renderPoisonChoice();
+            }
+        });
+
+        socket.on('update_state', (state) => {
+            eaten = state.eaten;
+            snackCount = state.snack_count;
+            isMyTurn = state.current_turn === myRole && !state.game_over;
+            gameStarted = Object.keys(state.poison_choices || {}).length === 2;
+
+            connectionInfo.textContent = `玩家: ${state.players_count} / 2，观战者: ${state.spectators_count || 0}`;
+            renderTable();
+        });
+
+        socket.on('game_start', (data) => {
+            statusBar.textContent = data.message;
+            gameStarted = true;
+            renderTable();
+        });
+
+        socket.on('snack_eaten', (data) => {
+            const snackEmoji = getSnackEmoji(data.snack);
+            statusBar.textContent = `P${data.by_player} 吃了 ${snackEmoji} #${data.snack}，轮到 P${data.next_turn}`;
+        });
+
+        socket.on('game_over', (data) => {
+            if (data.winner === 0) {
+                statusBar.textContent = '平局！所有点心都吃完了';
+            } else {
+                statusBar.textContent =
+                    `P${data.loser} 吃到了毒药，P${data.winner} 获胜！ ` +
+                    `毒药揭晓：P1是 #${data.poison1}，P2是 #${data.poison2}`;
+            }
+        });
+
+        socket.on('log_entry', (data) => {
+            const entry = document.createElement('div');
+            entry.textContent = data.text;
+            logBox.appendChild(entry);
+            logBox.scrollTop = logBox.scrollHeight;
+            // 最多保留10条
+            if (logBox.children.length > 10) {
+                logBox.removeChild(logBox.children[0]);
+            }
+        });
+
+        socket.on('invalid_action', (data) => {
+            showSystemMessage(data.message);
+        });
+
+        socket.on('info', (data) => {
+            statusBar.textContent = data.message;  // ✅ 替代 showSystemMessage
+        });
+
+
+        function showSystemMessage(msg) {
+            systemMessageBox.textContent = msg;
+            systemMessageBox.style.display = 'block';
+            setTimeout(() => {
+                systemMessageBox.style.display = 'none';
+            }, 2500);
+        }
+
+        function getSnackEmoji(i) {
+            return emoji[(i - 1) % emoji.length] || '🍪';
+        }
+
+        function renderPoisonChoice() {
+            statusBar.textContent = '请选择一个点心作为毒药';
+            snackTable.innerHTML = '';
+            for (let i = 1; i <= snackCount; i++) {
+                const btn = document.createElement('button');
+                btn.className = 'snack';
+                btn.textContent = getSnackEmoji(i) + i;
+                btn.onclick = () => {
+                    socket.emit('set_poison', { poison: i });
+                    poisonChosen = true;
+                    myPoison = i;
+                    statusBar.textContent = `你选择了毒药 #${i}，等待对方设定...`;
+                    renderTable();
+                };
+                snackTable.appendChild(btn);
+            }
+        }
+
+        function renderTable() {
+            if (!poisonChosen && (myRole === 1 || myRole === 2)) return;
+
+            snackTable.innerHTML = '';
+            for (let i = 1; i <= snackCount; i++) {
+                const btn = document.createElement('button');
+                btn.className = 'snack';
+                btn.textContent = getSnackEmoji(i) + i;
+
+                const isMine = (i === myPoison);
+                const alreadyEaten = eaten.includes(i);
+
+                if (alreadyEaten) {
+                    btn.classList.add('eaten');
+                    btn.disabled = true;
+                } else if (isMine) {
+                    btn.classList.add('poison');
+                    btn.disabled = true;
+                } else {
+                    if (isMyTurn && gameStarted) {
+                        btn.onclick = () => {
+                            socket.emit('eat_snack', { snack: i });
+                        };
+                    } else {
+                        btn.disabled = true;
+                    }
+                }
+
+                snackTable.appendChild(btn);
+            }
+        }
+
+        resetBtn.onclick = () => {
+            socket.emit('reset_game');
+            poisonChosen = false;
+            myPoison = null;
+            logBox.innerHTML = '';
+        };
+    </script>
+</body>
+
+</html>
