@@ -183,6 +183,10 @@
         let poisonChosen = false;
         let myPoison = null;
 
+        const animationTriggers = {
+            explodingSnackId: null
+        };
+
         const emoji = ['🍪', '🍰', '🍫', '🍩', '🧁', '🍬', '🍮', '🍭', '🥮', '🍡'];
 
         function playSound(type) {
@@ -258,6 +262,7 @@
                     logBox.innerHTML = '';
                 }
                 gameStarted = false; // Explicitly set gameStarted to false on a clear reset
+                animationTriggers.explodingSnackId = null; // Clear animation trigger on reset
             } else {
                 // If not a full reset, update gameStarted based on poison choices and game_over status
                 gameStarted = numPoisonChoices === 2 && !state.game_over;
@@ -290,18 +295,14 @@
                 playSound('eat_poison');
 
                 if (data.eaten_poison_snack_id) {
-                    const explodingSnackButton = snackTable.querySelector(`.snack[data-snack-id='${data.eaten_poison_snack_id}']`);
-                    if (explodingSnackButton) {
-                        // Ensure it's marked as eaten visually before exploding,
-                        // though renderTable() called by update_state should handle this.
-                        // To be safe, and for immediate effect if update_state is slow:
-                        if (!explodingSnackButton.classList.contains('eaten')) {
-                             explodingSnackButton.classList.add('eaten');
-                        }
-                        explodingSnackButton.classList.add('exploding');
-                    }
+                    // Set the ID for renderTable to use for animation
+                    animationTriggers.explodingSnackId = data.eaten_poison_snack_id;
+                    // Note: We no longer add the 'exploding' class directly here.
+                    // renderTable, called by the subsequent update_state, will handle it.
                 }
             }
+            // IMPORTANT: game_over state is set by update_state.
+            // renderTable() will be called by update_state which follows this event.
         });
 
         socket.on('log_entry', (data) => {
@@ -379,6 +380,13 @@
                 if (alreadyEaten) {
                     btn.classList.add('eaten');
                     btn.disabled = true;
+                    // Check if this is the snack that triggered game over by poison
+                    if (i === animationTriggers.explodingSnackId) {
+                        btn.classList.add('exploding');
+                        // Reset the trigger so animation doesn't replay on subsequent renders
+                        // unless game_over event sets it again for a new game ending.
+                        animationTriggers.explodingSnackId = null;
+                    }
                 } else if (isMine) {
                     btn.classList.add('poison');
                     btn.disabled = true;
